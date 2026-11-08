@@ -1,0 +1,183 @@
+package com.parqueadero.dao;
+
+import com.parqueadero.model.EspacioEstado;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * Acceso a datos de los espacios con su estado (ocupado / disponible).
+ * Recibe la {@link Connection} y no la cierra.
+ *
+ * <p>La ocupación no se guarda en {@code espacio}: un espacio está ocupado si
+ * tiene un registro de parqueo en estado 'ACTIVO'.
+ *
+ * <p>Desde V006 el piso y el tipo de vehículo están en la tabla {@code zona}:
+ * las consultas los toman con un JOIN y devuelven la letra de la zona con el
+ * alias {@code zona}, igual que antes.
+ */
+public final class EspacioDAO {
+
+    /**
+     * Espacios con la columna calculada {@code ocupado}. EXISTS devuelve 1 si
+     * la subconsulta encuentra al menos un registro ACTIVO en ese espacio (y se
+     * detiene en el primero), o 0 si no.
+     */
+    private static final String SELECT_CON_ESTADO =
+            "SELECT e.id_espacio, z.id_tipo, z.piso, z.letra AS zona, e.numero, e.habilitado,"
+                    + " EXISTS (SELECT 1 FROM registro_parqueo r"
+                    + "         WHERE r.id_espacio = e.id_espacio AND r.estado = 'ACTIVO') AS ocupado"
+                    + " FROM espacio e"
+                    + " JOIN zona z ON z.id_zona = e.id_zona";
+
+    /**
+     * Orden por piso, zona y número. El piso es texto ('1' a '99'): se convierte
+     * a número para que el piso 10 quede después del 2 y no entre el 1 y el 2.
+     */
+    private static final String ORDEN = " ORDER BY CAST(z.piso AS UNSIGNED), z.letra, e.numero";
+
+    private static final String SQL_LISTAR = SELECT_CON_ESTADO + ORDEN;
+
+    private static final String SQL_LISTAR_POR_TIPO =
+            SELECT_CON_ESTADO + " WHERE z.id_tipo = ?" + ORDEN;
+
+    private static final String SQL_BUSCAR_POR_ID = SELECT_CON_ESTADO + " WHERE e.id_espacio = ?";
+
+    // La vista vw_espacios_disponibles (V004, rehecha en V006) ya filtra
+    // habilitados y libres, y ya trae el piso, la zona y el tipo.
+    private static final String ORDEN_VISTA = " ORDER BY CAST(piso AS UNSIGNED), zona, numero";
+
+    private static final String SQL_LISTAR_DISPONIBLES =
+            "SELECT id_espacio, id_tipo, piso, zona, numero FROM vw_espacios_disponibles"
+                    + ORDEN_VISTA;
+
+    private static final String SQL_LISTAR_DISPONIBLES_POR_TIPO =
+            "SELECT id_espacio, id_tipo, piso, zona, numero FROM vw_espacios_disponibles"
+                    + " WHERE id_tipo = ?" + ORDEN_VISTA;
+
+    private static final String SQL_ACTUALIZAR_HABILITADO =
+            "UPDATE espacio SET habilitado = ? WHERE id_espacio = ?";
+
+    // habilitado no se envía: vale TRUE por defecto (V001).
+    private static final String SQL_INSERTAR = "INSERT INTO espacio (id_zona, numero) VALUES (?, ?)";
+
+    /**
+     * Todos los espacios con su estado, ordenados por piso, zona y número.
+     *
+     * @param idTipo si no es {@code null}, solo los de ese tipo de vehículo
+     */
+    public List<EspacioEstado> listar(Connection conexion, Long idTipo) throws SQLException {
+        String sql = idTipo == null ? SQL_LISTAR : SQL_LISTAR_POR_TIPO;
+        List<EspacioEstado> espacios = new ArrayList<>();
+        try (PreparedStatement consulta = conexion.prepareStatement(sql)) {
+            if (idTipo != null) {
+                consulta.setLong(1, idTipo);
+            }
+            try (ResultSet resultado = consulta.executeQuery()) {
+                while (resultado.next()) {
+                    espacios.add(mapearConEstado(resultado));
+                }
+            }
+        }
+        return espacios;
+    }
+
+    /**
+     * Espacios disponibles (habilitados y libres), leídos de la vista
+     * {@code vw_espacios_disponibles}.
+     *
+     * @param idTipo si no es {@code null}, solo los de ese tipo de vehículo
+     */
+    public List<EspacioEstado> listarDisponibles(Connection conexion, Long idTipo)
+            throws SQLException {
+        String sql = idTipo == null ? SQL_LISTAR_DISPONIBLES : SQL_LISTAR_DISPONIBLES_POR_TIPO;
+        List<EspacioEstado> espacios = new ArrayList<>();
+        try (PreparedStatement consulta = conexion.prepareStatement(sql)) {
+            if (idTipo != null) {
+                consulta.setLong(1, idTipo);
+            }
+            try (ResultSet resultado = consulta.executeQuery()) {
+                while (resultado.next()) {
+                    // Todo lo que devuelve la vista está habilitado, libre y disponible.
+                    espacios.add(new EspacioEstado(
+                            resultado.getLong("id_espacio"),
+                            resultado.getLong("id_tipo"),
+                            resultado.getString("piso"),
+                            resultado.getString("zona"),
+                            resultado.getString("numero"),
+                            true, false, true));
+                }
+            }
+        }
+        return espacios;
+    }
+
+    /**
+     * Busca un espacio por su llave primaria, con su estado.
+     *
+     * @return el espacio, o {@code Optional.empty()} si no existe
+     */
+    public Optional<EspacioEstado> buscarPorId(Connection conexion, long idEspacio)
+            throws SQLException {
+        try (PreparedStatement consulta = conexion.prepareStatement(SQL_BUSCAR_POR_ID)) {
+            consulta.setLong(1, idEspacio);
+            try (ResultSet resultado = consulta.executeQuery()) {
+                return resultado.next() ? Optional.of(mapearConEstado(resultado)) : Optional.empty();
+            }
+        }
+    }
+
+    /**
+     * Cambia si el espacio está en servicio.
+     *
+     * @return {@code true} si el espacio existe; {@code false} si no
+     */
+    public boolean actualizarHabilitado(Connection conexion, long idEspacio, boolean habilitado)
+            throws SQLException {
+        try (PreparedStatement consulta = conexion.prepareStatement(SQL_ACTUALIZAR_HABILITADO)) {
+            consulta.setBoolean(1, habilitado);
+            consulta.setLong(2, idEspacio);
+            // Connector/J devuelve las filas encontradas por el WHERE, no solo las modificadas.
+            return consulta.executeUpdate() > 0;
+        }
+    }
+
+    /**
+     * Inserta un espacio habilitado en la zona.
+     *
+     * @param numero dos dígitos, del "01" al "99"
+     * @return el id generado
+     */
+    public long insertar(Connection conexion, long idZona, String numero) throws SQLException {
+        try (PreparedStatement insercion = conexion.prepareStatement(SQL_INSERTAR,
+                Statement.RETURN_GENERATED_KEYS)) {
+            insercion.setLong(1, idZona);
+            insercion.setString(2, numero);
+            insercion.executeUpdate();
+            try (ResultSet llaves = insercion.getGeneratedKeys()) {
+                llaves.next();
+                return llaves.getLong(1);
+            }
+        }
+    }
+
+    private EspacioEstado mapearConEstado(ResultSet resultado) throws SQLException {
+        boolean habilitado = resultado.getBoolean("habilitado");
+        boolean ocupado = resultado.getBoolean("ocupado");
+        return new EspacioEstado(
+                resultado.getLong("id_espacio"),
+                resultado.getLong("id_tipo"),
+                resultado.getString("piso"),
+                resultado.getString("zona"),
+                resultado.getString("numero"),
+                habilitado,
+                ocupado,
+                habilitado && !ocupado);
+    }
+}

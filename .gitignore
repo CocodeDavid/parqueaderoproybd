@@ -1,0 +1,40 @@
+# ---------- Java / Maven ----------
+target/
+*.class
+*.log
+
+# ---------- Node / Vite ----------
+node_modules/
+dist/
+*.local
+npm-debug.log*
+# Reporte de cobertura de las pruebas (npm run test:cobertura)
+coverage/
+# Resultados de las pruebas E2E de Playwright (npm run test:e2e)
+test-results/
+playwright-report/
+
+# ---------- IDEs ----------
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+
+# ---------- Respaldos de la base (database/scripts/aplicar-migracion.sh) ----------
+# Tienen datos personales de los clientes: nunca se suben al repositorio.
+database/respaldos/
+
+# ---------- Variables de entorno ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Claude Code ----------
+CLAUDE.local.md
+
+# ---------- Sistema operativo ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
